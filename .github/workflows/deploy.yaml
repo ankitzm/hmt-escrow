@@ -1,11 +1,10 @@
 name: DeployGraphs
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
     paths:
-      - contracts/**
-      - hmt_subgraph/**
+      - 'contracts/**'
+      - 'hmt_subgraph/**'
 
 jobs:
   deploy:
