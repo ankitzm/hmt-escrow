@@ -202,8 +202,8 @@ class JobTestCase(unittest.TestCase):
 
         payouts = [
             ("0x9d689b8f50Fd2CAec716Cc5220bEd66E03F07B5f", Decimal("40.0"))]
-        self.assertFalse(
-            self.job.bulk_payout(payouts, {}, self.rep_oracle_pub_key))
+        bulk_payout_result = self.job.bulk_payout(payouts, {}, self.rep_oracle_pub_key)
+        self.assertFalse(bulk_payout_result["txn_succeeded"])
 
         # Paying the remaining amount empties the escrow and updates the status correctly.
 
@@ -353,11 +353,14 @@ class JobTestCase(unittest.TestCase):
         handler_mock.side_effect = Exception("")
 
         e = None
+
+        print("???????????????????????")
         with self.assertRaises(Exception) as e:
             with patch("hmt_escrow.eth_bridge.handle_transaction",
                        handler_mock):
                 self.job.launch(b"")
 
+        
         self.assertIsNotNone(e)
         self.assertEqual(str(e.exception), "Unable to create escrow")
 
@@ -380,14 +383,14 @@ class JobTestCase(unittest.TestCase):
             "hmt_escrow.eth_bridge.sleep",
             sleep_mock
         ):
-            success = self.job._raffle_txn(
+            txn_result = self.job._raffle_txn(
                 multi_creds=[("1", "11")],
                 txn_func=txn_mock,
                 txn_args=[],
                 txn_event="Transfer",
             )
 
-            self.assertFalse(success)
+            self.assertFalse(txn_result["txn_succeeded"])
 
             self.assertEqual(
                 handler_mock.call_args_list,
@@ -409,14 +412,14 @@ class JobTestCase(unittest.TestCase):
             # no retries
             self.job.retry = Retry()
 
-            success = self.job._raffle_txn(
+            txn_result = self.job._raffle_txn(
                 multi_creds=[("1", "11")],
                 txn_func=txn_mock,
                 txn_args=[],
                 txn_event="Transfer",
             )
 
-            self.assertFalse(success)
+            self.assertFalse(txn_result["txn_succeeded"])
             self.assertEqual(
                 handler_mock.call_args_list,
                 [call(

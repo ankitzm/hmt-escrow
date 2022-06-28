@@ -3,7 +3,8 @@ import logging
 import os
 from decimal import Decimal
 from enum import Enum
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, TypedDict
+from web3.types import TxReceipt
 
 from basemodels import Manifest
 from eth_keys import keys
@@ -33,6 +34,9 @@ LOG = logging.getLogger("hmt_escrow.job")
 
 Status = Enum("Status", "Launched Pending Partial Paid Complete Cancelled")
 
+class TxnResult(TypedDict):
+    txn_receipt: TxReceipt
+    txn_succeeded: bool
 
 def status(escrow_contract: Contract, gas_payer: str, gas: int = GAS_LIMIT) -> Enum:
     """Returns the status of the Job.
@@ -308,7 +312,11 @@ class Job:
         # Use factory to deploy a new escrow contract.
         trusted_handlers = [addr for addr, priv_key in self.multi_credentials]
 
+        print("!!!!!!!!!!!!!")
+
         txn_success = self._create_escrow(trusted_handlers)
+
+        print("txn_success", txn_success)
 
         if not txn_success:
             raise Exception("Unable to create escrow")
@@ -402,9 +410,10 @@ class Job:
                 )
 
         if not hmt_transferred:
-            hmt_transferred = self._raffle_txn(
+            txn_result = self._raffle_txn(
                 self.multi_credentials, txn_func, func_args, txn_event
             )
+            hmt_transferred = txn_result["txn_succeeded"]
 
         # give up
         if not hmt_transferred:
@@ -433,9 +442,10 @@ class Job:
             )
 
         if not contract_is_setup:
-            contract_is_setup = self._raffle_txn(
+            txn_result = self._raffle_txn(
                 self.multi_credentials, txn_func, func_args, txn_event
             )
+            contract_is_setup = txn_result["txn_succeeded"]
 
         if not contract_is_setup:
             LOG.warning(f"{txn_event} failed with all credentials.")
@@ -498,10 +508,10 @@ class Job:
             self.multi_credentials, txn_func, func_args, txn_event
         )
 
-        if not trusted_handlers_added:
+        if not trusted_handlers_added["txn_succeeded"]:
             LOG.exception(f"{txn_event} failed with all credentials.")
 
-        return trusted_handlers_added
+        return trusted_handlers_added["txn_succeeded"]
 
     def bulk_payout(
         self,
@@ -510,7 +520,7 @@ class Job:
         pub_key: bytes,
         gas: int = GAS_LIMIT,
         encrypt_final_results: bool = True,
-    ) -> bool:
+    ) -> TxnResult:
         """Performs a payout to multiple ethereum addresses. When the payout happens,
         final results are uploaded to IPFS and contract's state is updated to Partial or Paid
         depending on contract's balance.
@@ -595,8 +605,12 @@ class Job:
 
         func_args = [eth_addrs, hmt_amounts, url, hash_, 1]
         try:
-            handle_transaction_with_retry(txn_func, self.retry, *func_args, **txn_info)
-            return self._bulk_paid() is True
+            txn_receipt = handle_transaction_with_retry(txn_func, self.retry, *func_args, **txn_info)
+
+            return {
+                "txn_receipt": txn_receipt,
+                "txn_succeeded": self._bulk_paid() is True
+            }
 
         except Exception as e:
             LOG.debug(
@@ -607,10 +621,10 @@ class Job:
             self.multi_credentials, txn_func, func_args, txn_event
         )
 
-        if not bulk_paid:
+        if not bulk_paid["txn_succeeded"]:
             LOG.warning(f"{txn_event} failed with all credentials.")
 
-        return bulk_paid is True
+        return bulk_paid
 
     def abort(self, gas: int = GAS_LIMIT) -> bool:
         """Kills the contract and returns the HMT back to the gas payer.
@@ -707,7 +721,7 @@ class Job:
 
         job_aborted = self._raffle_txn(self.multi_credentials, txn_func, [], txn_event)
 
-        if not job_aborted:
+        if not job_aborted["txn_succeeded"]:
             LOG.exception(f"{txn_event} failed with all credentials.")
 
         return w3.eth.getCode(self.job_contract.address) == b""
@@ -786,7 +800,7 @@ class Job:
             self.multi_credentials, txn_func, [], txn_event
         )
 
-        if not job_cancelled:
+        if not job_cancelled["txn_succeeded"]:
             LOG.exception(f"{txn_event} failed with all credentials.")
 
         return self.status() == Status.Cancelled
@@ -872,7 +886,7 @@ class Job:
             self.multi_credentials, txn_func, func_args, txn_event
         )
 
-        if not results_stored:
+        if not results_stored["txn_succeeded"]:
             LOG.exception(f"{txn_event} failed with all credentials.")
         else:
             self.intermediate_manifest_hash = hash_
@@ -946,7 +960,7 @@ class Job:
             self.multi_credentials, txn_func, [], txn_event
         )
 
-        if not job_completed:
+        if not job_completed["txn_succeeded"]:
             LOG.exception(f"{txn_event} failed with all credentials.")
 
         return self.status() == Status.Complete
@@ -1425,18 +1439,18 @@ class Job:
                 f"{txn_event} failed with main credentials: {self.gas_payer}, {self.gas_payer_priv} due to {e}. Using secondary ones..."
             )
 
-        escrow_created = self._raffle_txn(
+        tx_receipt = self._raffle_txn(
             self.multi_credentials, txn_func, func_args, txn_event
         )
 
-        if not escrow_created:
+        if not tx_receipt["txn_succeeded"]:
             LOG.exception(f"{txn_event} failed with all credentials.")
 
-        return escrow_created
+        return tx_receipt["txn_succeeded"]
 
     def _raffle_txn(
         self, multi_creds, txn_func, txn_args, txn_event, gas: int = GAS_LIMIT
-    ):
+    ) -> TxnResult:
         """Takes in multiple credentials, loops through each and performs the given transaction.
 
         Args:
@@ -1450,6 +1464,7 @@ class Job:
             bool: returns True if the given transaction succeeds.
 
         """
+        txn_receipt = None
         txn_succeeded = False
 
         for gas_payer, gas_payer_priv in multi_creds:
@@ -1459,7 +1474,7 @@ class Job:
                 "gas": gas,
             }
             try:
-                handle_transaction_with_retry(
+                txn_receipt = handle_transaction_with_retry(
                     txn_func, self.retry, *txn_args, **txn_info
                 )
                 self.gas_payer = gas_payer
@@ -1471,4 +1486,7 @@ class Job:
                     f"{txn_event} failed with {gas_payer} and {gas_payer_priv} due to {e}."
                 )
 
-        return txn_succeeded
+        return {
+            "txn_receipt": txn_receipt,
+            "txn_succeeded": txn_succeeded is True
+        }
