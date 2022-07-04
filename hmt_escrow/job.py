@@ -3,7 +3,7 @@ import logging
 import os
 from decimal import Decimal
 from enum import Enum
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Union
 
 from basemodels import Manifest
 from eth_keys import keys
@@ -148,6 +148,7 @@ class Job:
         retry: Retry = None,
         hmt_server_addr: str = None,
         hmtoken_addr: str = None,
+        gas_limit: int = GAS_LIMIT,
     ):
         """Initializes a Job instance with values from a Manifest class and
         checks that the provided credentials are valid. An optional factory
@@ -242,6 +243,7 @@ class Job:
         self.multi_credentials = self._validate_multi_credentials(multi_credentials)
         self.hmt_server_addr = hmt_server_addr
         self.hmtoken_addr = HMTOKEN_ADDR if hmtoken_addr is None else hmtoken_addr
+        self.gas = gas_limit
 
         # Initialize a new Job.
         if not escrow_addr and escrow_manifest:
@@ -326,7 +328,7 @@ class Job:
         self.manifest_hash = hash_
         return self.status() == Status.Launched and self.balance() == 0
 
-    def setup(self, gas: int = GAS_LIMIT, sender: str = None) -> bool:
+    def setup(self, sender: str = None) -> bool:
         """Sets the escrow contract to be ready to receive answers from the Recording Oracle.
         The contract needs to be deployed and funded first.
 
@@ -382,7 +384,7 @@ class Job:
         txn_info = {
             "gas_payer": self.gas_payer,
             "gas_payer_priv": self.gas_payer_priv,
-            "gas": gas,
+            "gas": self.gas,
             "hmt_server_addr": self.hmt_server_addr,
         }
         if sender:
@@ -451,7 +453,7 @@ class Job:
             str(self.status()) == str(Status.Pending) and self.balance() == hmt_amount
         )
 
-    def add_trusted_handlers(self, handlers: List[str], gas: int = GAS_LIMIT) -> bool:
+    def add_trusted_handlers(self, handlers: List[str]) -> bool:
         """Add trusted handlers that can freely transact with the contract and
          perform aborts and cancels for example.
 
@@ -490,7 +492,7 @@ class Job:
         txn_info = {
             "gas_payer": self.gas_payer,
             "gas_payer_priv": self.gas_payer_priv,
-            "gas": gas,
+            "gas": self.gas,
             "hmt_server_addr": self.hmt_server_addr,
         }
         func_args = [handlers]
@@ -516,7 +518,6 @@ class Job:
         payouts: List[Tuple[str, Decimal]],
         results: Dict,
         pub_key: bytes,
-        gas: int = GAS_LIMIT,
         encrypt_final_results: bool = True,
     ) -> bool:
         """Performs a payout to multiple ethereum addresses. When the payout happens,
@@ -587,7 +588,7 @@ class Job:
         txn_info = {
             "gas_payer": self.gas_payer,
             "gas_payer_priv": self.gas_payer_priv,
-            "gas": gas,
+            "gas": self.gas,
             "hmt_server_addr": self.hmt_server_addr,
         }
 
@@ -621,7 +622,7 @@ class Job:
 
         return bulk_paid is True
 
-    def abort(self, gas: int = GAS_LIMIT) -> bool:
+    def abort(self) -> bool:
         """Kills the contract and returns the HMT back to the gas payer.
         The contract cannot be aborted if the contract is in Partial, Paid or Complete state.
 
@@ -699,7 +700,7 @@ class Job:
         txn_info = {
             "gas_payer": self.gas_payer,
             "gas_payer_priv": self.gas_payer_priv,
-            "gas": gas,
+            "gas": self.gas,
             "hmt_server_addr": self.hmt_server_addr,
         }
 
@@ -719,7 +720,7 @@ class Job:
 
         return w3.eth.getCode(self.job_contract.address) == b""
 
-    def cancel(self, gas: int = GAS_LIMIT) -> bool:
+    def cancel(self) -> bool:
         """Returns the HMT back to the gas payer. It's the softer version of abort as the contract is not destroyed.
 
         >>> credentials = {
@@ -778,7 +779,7 @@ class Job:
         txn_info = {
             "gas_payer": self.gas_payer,
             "gas_payer_priv": self.gas_payer_priv,
-            "gas": gas,
+            "gas": self.gas,
             "hmt_server_addr": self.hmt_server_addr,
         }
 
@@ -799,9 +800,7 @@ class Job:
 
         return self.status() == Status.Cancelled
 
-    def store_intermediate_results(
-        self, results: Dict, pub_key: bytes, gas: int = GAS_LIMIT
-    ) -> bool:
+    def store_intermediate_results(self, results: Dict, pub_key: bytes) -> bool:
         """Recording Oracle stores intermediate results with Reputation Oracle's public key to S3
         and updates the contract's state.
 
@@ -863,7 +862,7 @@ class Job:
         txn_info = {
             "gas_payer": self.gas_payer,
             "gas_payer_priv": self.gas_payer_priv,
-            "gas": gas,
+            "gas": self.gas,
             "hmt_server_addr": self.hmt_server_addr,
         }
         (hash_, url) = upload(results, pub_key)
@@ -891,7 +890,6 @@ class Job:
 
     def complete(
         self,
-        gas: int = GAS_LIMIT,
         blocking: bool = False,
         retries: int = 3,
         delay: int = 5,
@@ -940,7 +938,7 @@ class Job:
         txn_info = {
             "gas_payer": self.gas_payer,
             "gas_payer_priv": self.gas_payer_priv,
-            "gas": gas,
+            "gas": self.gas,
             "hmt_server_addr": self.hmt_server_addr,
         }
 
@@ -961,7 +959,7 @@ class Job:
 
         return self.status() == Status.Complete
 
-    def status(self, gas: int = GAS_LIMIT) -> Enum:
+    def status(self) -> Enum:
         """Returns the status of the Job.
 
         >>> from test.hmt_escrow.utils import manifest
@@ -983,9 +981,9 @@ class Job:
             Enum: returns the status as an enumeration.
 
         """
-        return status(self.job_contract, self.gas_payer)
+        return status(self.job_contract, self.gas_payer, self.gas)
 
-    def balance(self, gas: int = GAS_LIMIT) -> int:
+    def balance(self) -> int:
         """Retrieve the balance of a Job in HMT.
 
         >>> from test.hmt_escrow.utils import manifest
@@ -1012,7 +1010,7 @@ class Job:
 
         """
         return self.job_contract.functions.getBalance().call(
-            {"from": self.gas_payer, "gas": Wei(gas)}
+            {"from": self.gas_payer, "gas": Wei(self.gas)}
         )
 
     def manifest(self, priv_key: bytes) -> Dict:
@@ -1044,7 +1042,7 @@ class Job:
         """
         return download(self.manifest_url, priv_key)
 
-    def intermediate_results(self, priv_key: bytes, gas: int = GAS_LIMIT) -> Dict:
+    def intermediate_results(self, priv_key: bytes) -> Dict:
         """Reputation Oracle retrieves the intermediate results stored by the Recording Oracle.
 
         >>> from test.hmt_escrow.utils import manifest
@@ -1078,7 +1076,7 @@ class Job:
         """
         return download(self.intermediate_manifest_url, priv_key)
 
-    def final_results(self, priv_key: bytes, gas: int = GAS_LIMIT) -> Dict:
+    def final_results(self, priv_key: bytes) -> Dict:
         """Retrieves the final results stored by the Reputation Oracle.
 
         >>> from test.hmt_escrow.utils import manifest
@@ -1110,7 +1108,7 @@ class Job:
 
         """
         final_results_url = self.job_contract.functions.finalResultsUrl().call(
-            {"from": self.gas_payer, "gas": Wei(gas)}
+            {"from": self.gas_payer, "gas": Wei(self.gas)}
         )
         return download(final_results_url, priv_key)
 
@@ -1129,8 +1127,8 @@ class Job:
 
         self.factory_contract = get_factory(factory_addr, self.hmt_server_addr)
         self.job_contract = get_escrow(escrow_addr, self.hmt_server_addr)
-        self.manifest_url = manifest_url(self.job_contract, gas_payer)
-        self.manifest_hash = manifest_hash(self.job_contract, gas_payer)
+        self.manifest_url = manifest_url(self.job_contract, gas_payer, self.gas)
+        self.manifest_hash = manifest_hash(self.job_contract, gas_payer, self.gas)
 
         manifest_dict = self.manifest(rep_oracle_priv_key)
         escrow_manifest = Manifest(manifest_dict)
@@ -1235,9 +1233,7 @@ class Job:
 
         return self._eth_addr_valid(gas_payer_addr, gas_payer_priv)
 
-    def _factory_contains_escrow(
-        self, escrow_addr: str, factory_addr: str, gas: int = GAS_LIMIT
-    ) -> bool:
+    def _factory_contains_escrow(self, escrow_addr: str, factory_addr: str) -> bool:
         """Checks whether a given factory address contains a given escrow address.
 
         >>> from test.hmt_escrow.utils import manifest
@@ -1274,14 +1270,13 @@ class Job:
             factory_addr, hmt_server_addr=self.hmt_server_addr
         )
         return factory_contract.functions.hasEscrow(escrow_addr).call(
-            {"from": self.gas_payer, "gas": Wei(gas)}
+            {"from": self.gas_payer, "gas": Wei(self.gas)}
         )
 
     def _init_factory(
         self,
         factory_addr: Optional[str],
         credentials: Dict[str, str],
-        gas: int = GAS_LIMIT,
     ) -> Contract:
         """Takes an optional factory address and returns its contract representation. Alternatively
         a new factory is created.
@@ -1316,7 +1311,9 @@ class Job:
 
         if not factory_addr_valid:
             factory_addr = deploy_factory(
-                GAS_LIMIT, hmt_server_addr=self.hmt_server_addr, **credentials
+                gas=self.gas,
+                hmt_server_addr=self.hmt_server_addr,
+                **credentials
             )
             factory = get_factory(factory_addr, hmt_server_addr=self.hmt_server_addr)
             if not factory_addr:
@@ -1329,7 +1326,7 @@ class Job:
 
         return factory
 
-    def _bulk_paid(self, gas: int = GAS_LIMIT) -> int:
+    def _bulk_paid(self) -> int:
         """Checks if the last bulk payment has succeeded.
 
         >>> from test.hmt_escrow.utils import manifest
@@ -1363,10 +1360,10 @@ class Job:
 
         """
         return self.job_contract.functions.bulkPaid().call(
-            {"from": self.gas_payer, "gas": Wei(gas)}
+            {"from": self.gas_payer, "gas": Wei(self.gas)}
         )
 
-    def _last_escrow_addr(self, gas: int = GAS_LIMIT) -> str:
+    def _last_escrow_addr(self) -> str:
         """Gets the last deployed escrow contract address of the initialized factory contract.
 
         >>> from test.hmt_escrow.utils import manifest
@@ -1390,10 +1387,10 @@ class Job:
 
         """
         return self.factory_contract.functions.lastEscrow().call(
-            {"from": self.gas_payer, "gas": Wei(gas)}
+            {"from": self.gas_payer, "gas": Wei(self.gas)}
         )
 
-    def _create_escrow(self, trusted_handlers=[], gas: int = GAS_LIMIT) -> bool:
+    def _create_escrow(self, trusted_handlers=[]) -> bool:
         """Launches a new escrow contract to the ethereum network.
 
         >>> from test.hmt_escrow.utils import manifest
@@ -1430,7 +1427,7 @@ class Job:
         txn_info = {
             "gas_payer": self.gas_payer,
             "gas_payer_priv": self.gas_payer_priv,
-            "gas": gas,
+            "gas": self.gas,
             "hmt_server_addr": self.hmt_server_addr,
         }
         func_args = [trusted_handlers]
@@ -1453,7 +1450,7 @@ class Job:
         return escrow_created
 
     def _raffle_txn(
-        self, multi_creds, txn_func, txn_args, txn_event, gas: int = GAS_LIMIT
+        self, multi_creds, txn_func, txn_args, txn_event
     ):
         """Takes in multiple credentials, loops through each and performs the given transaction.
 
@@ -1474,7 +1471,7 @@ class Job:
             txn_info = {
                 "gas_payer": gas_payer,
                 "gas_payer_priv": gas_payer_priv,
-                "gas": gas,
+                "gas": self.gas,
                 "hmt_server_addr": self.hmt_server_addr,
             }
             try:
